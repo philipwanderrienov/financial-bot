@@ -5,7 +5,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-agent/backend/internal/cache"
 	"finance-agent/backend/internal/client"
 	"finance-agent/backend/internal/config"
 	"finance-agent/backend/internal/models"
@@ -26,11 +25,9 @@ func SetupRouter(cfg config.Config) *gin.Engine {
 		c.Next()
 	})
 
-	store := cache.NewSnapshotStore()
 	finnhubClient := client.NewFinnhubClient(cfg.FinnhubAPIKey)
 	recoService := service.NewRecommendationService(finnhubClient)
-	sectors := defaultSectors()
-	realtimeService := service.NewRealtimeService(cfg, finnhubClient, recoService, store, sectors)
+	realtimeService := service.NewRealtimeService(cfg, finnhubClient, recoService, nil, defaultSectors())
 	SetRealtimeService(realtimeService)
 	realtimeService.Start()
 
@@ -45,7 +42,6 @@ func SetupRouter(cfg config.Config) *gin.Engine {
 		api.GET("/watchlist", Watchlist)
 		api.GET("/filings", Filings)
 		api.GET("/recommendation", Recommendation)
-		api.GET("/sectors", Sectors)
 	}
 
 	return router

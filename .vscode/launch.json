@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Frontend: Debug Vite/React",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "preLaunchTask": "frontend: dev"
+    },
+    {
+      "name": "Backend: Debug Go Server",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/backend/cmd/server",
+      "cwd": "${workspaceFolder}/backend",
+      "preLaunchTask": "backend: dev",
+      "envFile": "${workspaceFolder}/backend/.env"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full Stack: Debug Frontend + Backend",
+      "configurations": [
+        "Backend: Debug Go Server",
+        "Frontend: Debug Vite/React"
+      ]
+    }
+  ]
+}

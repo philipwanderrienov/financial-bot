@@ -53,27 +53,5 @@ func Recommendation(c *gin.Context) {
 		symbol = "AAPL"
 	}
 
-	if realtimeService == nil {
-		c.JSON(http.StatusOK, models.RecommendationResponse{
-			UpdatedAt:  "2026-04-06T00:00:00Z",
-			Symbol:     symbol,
-			Action:     "hold",
-			Confidence: 50,
-			Scores: models.RecommendationScores{
-				Technical:   50,
-				Fundamental: 50,
-				News:        50,
-				Risk:        50,
-			},
-			Reasons: []string{"Data sementara belum tersedia."},
-			Sources: models.RecommendationSources{
-				MarketData: "Finnhub quote API",
-				News:       "Finnhub company news API",
-				Filings:    "SEC EDGAR / future integration",
-			},
-		})
-		return
-	}
-
 	c.JSON(http.StatusOK, realtimeService.SnapshotForRecommendation(symbol))
 }

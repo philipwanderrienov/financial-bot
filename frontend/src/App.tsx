@@ -72,6 +72,12 @@ type RecommendationResponse = {
   [key: string]: unknown
 }
 
+type RecommendationApiResponse =
+  | RecommendationResponse
+  | { data?: RecommendationResponse }
+  | { success?: boolean; recommendation?: RecommendationResponse }
+  | { success?: boolean; data?: RecommendationResponse; recommendation?: RecommendationResponse; message?: string }
+
 type SectorItem = {
   key: string
   label: string
@@ -79,7 +85,13 @@ type SectorItem = {
 }
 
 const API_BASE = 'http://localhost:8080/api'
-const POLL_INTERVAL_MS = 8000
+const POLL_INTERVAL_MS = 0
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/$/, '')
+}
+
+const DASHBOARD_API_BASE = normalizeBaseUrl(API_BASE)
 
 const sectors: SectorItem[] = [
   {
@@ -174,13 +186,74 @@ function createFallbackRecommendation(symbol: string): RecommendationResponse {
 
 async function fetchJson<T>(path: string, fallback: T): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`)
+    const response = await fetch(`${DASHBOARD_API_BASE}${path}`)
     if (!response.ok) {
       throw new Error(`Request failed: ${response.status}`)
     }
     return (await response.json()) as T
   } catch {
     return fallback
+  }
+}
+
+function normalizeRecommendationResponse(input: RecommendationApiResponse, fallback: RecommendationResponse): RecommendationResponse {
+  const payload =
+    input && typeof input === 'object'
+      ? 'recommendation' in input && input.recommendation
+        ? input.recommendation
+        : 'data' in input && input.data
+          ? input.data
+          : input
+      : null
+
+  if (!payload || typeof payload !== 'object') return fallback
+
+  const response = payload as Partial<RecommendationResponse>
+  const rawScores = (response as { scores?: unknown }).scores as Record<string, unknown> | undefined
+  const rawSources = (response as { sources?: unknown }).sources as Record<string, unknown> | undefined
+
+  const readNumber = (value: unknown, fallbackValue: number): number => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    return fallbackValue
+  }
+
+  const updatedAt = typeof response.updatedAt === 'string' && response.updatedAt.trim() ? response.updatedAt : fallback.updatedAt
+  const symbol = typeof response.symbol === 'string' && response.symbol.trim() ? response.symbol : fallback.symbol
+  const action = typeof response.action === 'string' && response.action.trim() ? response.action : fallback.action
+  const confidence = readNumber(response.confidence, fallback.confidence)
+
+  const scores = {
+    technical: readNumber(rawScores?.technical, fallback.scores.technical),
+    fundamental: readNumber(rawScores?.fundamental, fallback.scores.fundamental),
+    news: readNumber(rawScores?.news, fallback.scores.news),
+    risk: readNumber(rawScores?.risk, fallback.scores.risk)
+  }
+
+  const sources = {
+    marketData: typeof rawSources?.marketData === 'string' && rawSources.marketData.trim() ? rawSources.marketData : fallback.sources.marketData,
+    news: typeof rawSources?.news === 'string' && rawSources.news.trim() ? rawSources.news : fallback.sources.news,
+    filings: typeof rawSources?.filings === 'string' && rawSources.filings.trim() ? rawSources.filings : fallback.sources.filings
+  }
+
+  const reasons =
+    Array.isArray(response.reasons) && response.reasons.length > 0
+      ? response.reasons.filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+      : fallback.reasons
+
+  return {
+    ...fallback,
+    ...response,
+    updatedAt,
+    symbol,
+    action,
+    confidence,
+    scores,
+    sources,
+    reasons
   }
 }
 
@@ -276,6 +349,9 @@ export default function App() {
   const [recommendationLoading, setRecommendationLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [refreshError, setRefreshError] = useState<string | null>(null)
+  const [recommendationError, setRecommendationError] = useState<string | null>(null)
+  const [recommendationRequestSymbol, setRecommendationRequestSymbol] = useState<string>(recommendationSymbol)
+  const [recommendationRequestId, setRecommendationRequestId] = useState(0)
   const selectedSectorData = sectors.find((sector) => sector.key === selectedSector) ?? sectors[0]
   const recommendationSymbolRef = useRef(recommendationSymbol)
 
@@ -286,20 +362,39 @@ export default function App() {
   const headlineChange = useMemo(() => formatPercent(summary.market.changePercent), [summary.market.changePercent])
 
   async function loadDashboardSnapshot(symbol = recommendationSymbolRef.current, silent = false) {
+    const requestId = Date.now()
+    setRecommendationRequestSymbol(symbol)
+    setRecommendationRequestId(requestId)
+
     try {
       const [summaryData, watchlistData, filingsData, recommendationData] = await Promise.all([
         fetchJson<SummaryResponse>('/summary', summary),
         fetchJson<WatchlistResponse>('/watchlist', { items: watchlist }),
         fetchJson<FilingsResponse>('/filings', { items: filings }),
-        fetchJson<RecommendationResponse>(`/recommendation?symbol=${encodeURIComponent(symbol)}`, createFallbackRecommendation(symbol))
+        fetchJson<RecommendationApiResponse>(`/recommendation?symbol=${encodeURIComponent(symbol)}`, createFallbackRecommendation(symbol))
       ])
+
+      const normalizedRecommendation = normalizeRecommendationResponse(recommendationData, createFallbackRecommendation(symbol))
 
       setSummary(summaryData)
       setWatchlist(watchlistData.items)
       setFilings(filingsData.items)
-      setRecommendation(recommendationData)
+
+      setRecommendation((current) => {
+        if (recommendationRequestId && recommendationRequestId !== requestId && current) {
+          return current
+        }
+        return normalizedRecommendation
+      })
+
+      setRecommendationError(null)
       setLastUpdated(new Date())
       setRefreshError(null)
+
+      if (window.location.hostname === 'localhost') {
+        console.debug('[recommendation] dashboard snapshot', symbol, normalizedRecommendation)
+        console.debug('[recommendation] raw response', recommendationData)
+      }
     } catch {
       if (!silent) {
         setRefreshError('Gagal memuat pembaruan terbaru. Menampilkan data terakhir yang tersedia.')
@@ -313,19 +408,12 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true
-
     ;(async () => {
       if (!mounted) return
       await loadDashboardSnapshot(recommendationSymbolRef.current)
     })()
-
-    const interval = window.setInterval(() => {
-      void loadDashboardSnapshot(recommendationSymbolRef.current, true)
-    }, POLL_INTERVAL_MS)
-
     return () => {
       mounted = false
-      window.clearInterval(interval)
     }
   }, [])
 
@@ -341,14 +429,31 @@ export default function App() {
 
   async function handleLoadRecommendation(symbol = recommendationSymbol) {
     setRecommendationLoading(true)
+    const requestId = Date.now()
+    setRecommendationRequestSymbol(symbol)
+    setRecommendationRequestId(requestId)
+
     try {
-      const result = await fetchJson<RecommendationResponse>(
+      const result = await fetchJson<RecommendationApiResponse>(
         `/recommendation?symbol=${encodeURIComponent(symbol)}`,
         createFallbackRecommendation(symbol)
       )
-      setRecommendation(result)
+      const normalizedRecommendation = normalizeRecommendationResponse(result, createFallbackRecommendation(symbol))
+
+      setRecommendation((current) => {
+        if (recommendationRequestId && recommendationRequestId !== requestId && current) {
+          return current
+        }
+        return normalizedRecommendation
+      })
+
+      setRecommendationError(null)
       setLastUpdated(new Date())
       setRefreshError(null)
+      if (window.location.hostname === 'localhost') {
+        console.debug('[recommendation] manual refresh', symbol, normalizedRecommendation)
+        console.debug('[recommendation] raw response', result)
+      }
     } finally {
       setRecommendationLoading(false)
     }
@@ -360,10 +465,14 @@ export default function App() {
     setRecommendationSymbol(sector.symbols[0])
   }
 
-  const displayedRecommendation = recommendation ?? createFallbackRecommendation(recommendationSymbol)
+  const displayedRecommendation =
+    recommendation && recommendation.symbol === recommendationRequestSymbol
+      ? recommendation
+      : recommendation
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
+      {recommendationError ? <div className="sr-only">{recommendationError}</div> : null}
       <div className="app-shell mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         <header className="app-header mb-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
@@ -380,7 +489,7 @@ export default function App() {
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
               <div className="font-medium text-slate-900">API Backend</div>
-              <div className="font-mono text-xs text-slate-500">{API_BASE}</div>
+              <div className="font-mono text-xs text-slate-500">{DASHBOARD_API_BASE}</div>
             </div>
           </div>
           <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
@@ -486,36 +595,46 @@ export default function App() {
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Simbol</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">{displayedRecommendation.symbol}</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {displayedRecommendation ? displayedRecommendation.symbol : 'Memuat...'}
+                    </div>
                   </div>
-                  <div className={`rounded-full border px-4 py-2 text-sm font-semibold uppercase tracking-wide ${actionTone(displayedRecommendation.action)}`}>
-                    {displayedRecommendation.action}
+                  <div
+                    className={`rounded-full border px-4 py-2 text-sm font-semibold uppercase tracking-wide ${
+                      displayedRecommendation ? actionTone(displayedRecommendation.action) : 'border-slate-200 bg-slate-50 text-slate-500'
+                    }`}
+                  >
+                    {displayedRecommendation ? displayedRecommendation.action : 'Memuat...'}
                   </div>
                 </div>
 
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   <div>
                     <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Keyakinan</div>
-                    <div className="mt-2 text-3xl font-semibold text-slate-900">{formatRecommendationScore(displayedRecommendation.confidence)}%</div>
+                    <div className="mt-2 text-3xl font-semibold text-slate-900">
+                      {displayedRecommendation ? `${formatRecommendationScore(displayedRecommendation.confidence)}%` : '—'}
+                    </div>
                     <div className="mt-3 h-2 rounded-full bg-slate-200">
                       <div
                         className="h-2 rounded-full bg-sky-500 transition-all"
-                        style={{ width: progressWidth(displayedRecommendation.confidence) }}
+                        style={{ width: progressWidth(displayedRecommendation ? displayedRecommendation.confidence : 0) }}
                       />
                     </div>
                   </div>
                   <div>
                     <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Diperbarui</div>
-                    <div className="mt-2 text-sm text-slate-600">{formatDate(displayedRecommendation.updatedAt)}</div>
+                    <div className="mt-2 text-sm text-slate-600">
+                      {displayedRecommendation ? formatDate(displayedRecommendation.updatedAt) : 'Memuat...'}
+                    </div>
                     <div className="mt-4 text-xs uppercase tracking-[0.2em] text-slate-500">Sumber</div>
                     <div className="mt-2 text-sm text-slate-600">
-                      Market: {displayedRecommendation.sources.marketData}
+                      Market: {displayedRecommendation ? displayedRecommendation.sources.marketData : 'Memuat...'}
                       <br />
-                      News: {displayedRecommendation.sources.news}
+                      News: {displayedRecommendation ? displayedRecommendation.sources.news : 'Memuat...'}
                       <br />
-                      Filing: {displayedRecommendation.sources.filings}
+                      Filing: {displayedRecommendation ? displayedRecommendation.sources.filings : 'Memuat...'}
                     </div>
-                    {displayedRecommendation.metadata?.scoreModel || displayedRecommendation.metadata?.scoreVersion ? (
+                    {displayedRecommendation && (displayedRecommendation.metadata?.scoreModel || displayedRecommendation.metadata?.scoreVersion) ? (
                       <div className="mt-4 text-xs uppercase tracking-[0.2em] text-slate-500">
                         Metadata Skor
                         <div className="mt-2 normal-case tracking-normal text-slate-600">
@@ -530,10 +649,10 @@ export default function App() {
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {[
-                    { label: 'Teknikal', value: displayedRecommendation.scores.technical },
-                    { label: 'Fundamental', value: displayedRecommendation.scores.fundamental },
-                    { label: 'Berita', value: displayedRecommendation.scores.news },
-                    { label: 'Risiko', value: displayedRecommendation.scores.risk }
+                    { label: 'Teknikal', value: displayedRecommendation?.scores.technical ?? 0 },
+                    { label: 'Fundamental', value: displayedRecommendation?.scores.fundamental ?? 0 },
+                    { label: 'Berita', value: displayedRecommendation?.scores.news ?? 0 },
+                    { label: 'Risiko', value: displayedRecommendation?.scores.risk ?? 0 }
                   ].map((score) => (
                     <div key={score.label} className="rounded-2xl border border-slate-200 bg-white p-4">
                       <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{score.label}</div>
@@ -545,7 +664,7 @@ export default function App() {
                 <div className="mt-5">
                   <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Alasan</div>
                   <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                    {displayedRecommendation.reasons.map((reason) => (
+                    {(displayedRecommendation ? displayedRecommendation.reasons : ['Memuat data rekomendasi...']).map((reason) => (
                       <li key={reason} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
                         {translateReason(reason)}
                       </li>

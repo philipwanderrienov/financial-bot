@@ -10,6 +10,7 @@ import (
 )
 
 func main() {
+	log.Printf("Fetching data from Finnhub...")
 	gin.SetMode(gin.ReleaseMode)
 	cfg := config.Load()
 	router := httpserver.SetupRouter(cfg)

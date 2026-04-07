@@ -4,180 +4,47 @@ import (
 	"fmt"
 	"time"
 
-	"finance-agent/backend/internal/cache"
 	"finance-agent/backend/internal/client"
 	"finance-agent/backend/internal/config"
 	"finance-agent/backend/internal/models"
 )
 
 type RealtimeService struct {
-	finnhub   *client.FinnhubClient
-	reco      *RecommendationService
-	store     *cache.SnapshotStore
-	sectors   []models.Sector
-	interval  time.Duration
-	now       func() time.Time
-	stopCh    chan struct{}
-	stoppedCh chan struct{}
+	finnhub  *client.FinnhubClient
+	reco     *RecommendationService
+	sectors  []models.Sector
+	now      func() time.Time
 }
 
-func NewRealtimeService(cfg config.Config, finnhub *client.FinnhubClient, reco *RecommendationService, store *cache.SnapshotStore, sectors []models.Sector) *RealtimeService {
-	interval := 15 * time.Second
-	if cfg.RefreshSeconds > 0 {
-		interval = time.Duration(cfg.RefreshSeconds) * time.Second
-	}
-
+func NewRealtimeService(cfg config.Config, finnhub *client.FinnhubClient, reco *RecommendationService, _ interface{}, sectors []models.Sector) *RealtimeService {
+	_ = cfg
 	return &RealtimeService{
-		finnhub:   finnhub,
-		reco:      reco,
-		store:     store,
-		sectors:   sectors,
-		interval:  interval,
-		now:       time.Now,
-		stopCh:    make(chan struct{}),
-		stoppedCh: make(chan struct{}),
+		finnhub: finnhub,
+		reco:    reco,
+		sectors: sectors,
+		now:     time.Now,
 	}
 }
 
-func (s *RealtimeService) Start() {
-	s.refreshAll()
+func (s *RealtimeService) Start() {}
 
-	go func() {
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
-		defer close(s.stoppedCh)
+func (s *RealtimeService) Stop() {}
 
-		for {
-			select {
-			case <-ticker.C:
-				s.refreshAll()
-			case <-s.stopCh:
-				return
-			}
-		}
-	}()
-}
+func (s *RealtimeService) refreshAll() {}
 
-func (s *RealtimeService) Stop() {
-	select {
-	case <-s.stopCh:
-		return
-	default:
-		close(s.stopCh)
-		<-s.stoppedCh
-	}
-}
+func (s *RealtimeService) refreshSummary() {}
 
-func (s *RealtimeService) refreshAll() {
-	s.refreshSummary()
-	s.refreshWatchlist()
-	s.refreshFilings()
-	s.refreshSectors()
-	s.refreshRecommendations()
-}
+func (s *RealtimeService) refreshWatchlist() {}
 
-func (s *RealtimeService) refreshSummary() {
-	symbols := []string{"AAPL", "MSFT", "NVDA"}
-	items := make([]models.Signal, 0, len(symbols))
-	market := models.MarketQuote{Symbol: "AAPL"}
+func (s *RealtimeService) refreshFilings() {}
 
-	for i, symbol := range symbols {
-		rec, err := s.reco.GetRecommendation(symbol)
-		if err != nil {
-			if i == 0 && s.store.HasSummary() {
-				return
-			}
-			continue
-		}
-		s.store.UpdateRecommendation(symbol, rec)
-		items = append(items, models.Signal{
-			Symbol:     symbol,
-			Signal:     rec.Action,
-			Confidence: rec.Confidence / 100,
-			Reason:     firstReason(rec.Reasons),
-		})
-		if symbol == "AAPL" {
-			market = models.MarketQuote{Symbol: symbol}
-		}
-	}
+func (s *RealtimeService) refreshSectors() {}
 
-	if len(items) == 0 && s.store.HasSummary() {
-		return
-	}
+func (s *RealtimeService) refreshRecommendations() {}
 
-	summary := models.SummaryResponse{
-		UpdatedAt: s.now().UTC().Format(time.RFC3339),
-		Market:    market,
-		Signals:   items,
-	}
-	s.store.UpdateSummary(summary)
-}
+func (s *RealtimeService) warmUpRecommendations() {}
 
-func (s *RealtimeService) refreshWatchlist() {
-	items := []models.WatchlistItem{}
-	for _, symbol := range []string{"AAPL", "MSFT", "NVDA"} {
-		rec, err := s.reco.GetRecommendation(symbol)
-		if err != nil {
-			continue
-		}
-		items = append(items, models.WatchlistItem{
-			Symbol:        symbol,
-			Name:          symbol,
-			Price:         rec.Confidence,
-			ChangePercent: rec.Scores.Technical - 50,
-			Signal:        rec.Action,
-		})
-	}
-	if len(items) == 0 && s.store.HasWatchlist() {
-		return
-	}
-	s.store.UpdateWatchlist(models.WatchlistResponse{Items: items})
-}
-
-func (s *RealtimeService) refreshFilings() {
-	filings := models.FilingsResponse{
-		Items: []models.Filing{
-			{
-				Symbol:      "AAPL",
-				Title:       "Latest quarterly filing available",
-				Source:      "SEC",
-				PublishedAt: s.now().UTC().Format(time.RFC3339),
-				URL:         "https://www.sec.gov",
-			},
-		},
-	}
-	if s.store.HasFilings() {
-		s.store.UpdateFilings(filings)
-		return
-	}
-	s.store.UpdateFilings(filings)
-}
-
-func (s *RealtimeService) refreshSectors() {
-	if len(s.sectors) == 0 {
-		return
-	}
-	s.store.UpdateSectors(s.sectors)
-}
-
-func (s *RealtimeService) refreshRecommendations() {
-	for _, sector := range s.sectors {
-		for _, symbol := range sector.Symbols {
-			rec, err := s.reco.GetRecommendation(symbol)
-			if err != nil {
-				continue
-			}
-			s.store.UpdateRecommendation(symbol, rec)
-		}
-	}
-}
-
-func firstReason(reasons []string) string {
-	if len(reasons) == 0 {
-		return ""
-	}
-	return reasons[0]
-}
+func firstReason(reasons []string) string { return "" }
 
 func defaultSectors() []models.Sector {
 	return []models.Sector{
@@ -188,14 +55,11 @@ func defaultSectors() []models.Sector {
 }
 
 func (s *RealtimeService) SnapshotForRecommendation(symbol string) models.RecommendationResponse {
-	if rec, ok := s.store.Recommendation(symbol); ok {
-		return rec
-	}
 	rec, err := s.reco.GetRecommendation(symbol)
 	if err == nil {
-		s.store.UpdateRecommendation(symbol, rec)
 		return rec
 	}
+
 	return models.RecommendationResponse{
 		UpdatedAt:  s.now().UTC().Format(time.RFC3339),
 		Symbol:     symbol,
@@ -207,7 +71,7 @@ func (s *RealtimeService) SnapshotForRecommendation(symbol string) models.Recomm
 			News:        50,
 			Risk:        50,
 		},
-		Reasons: []string{"Data sementara belum tersedia, menunggu refresh berikutnya."},
+		Reasons: []string{"Data sementara tidak tersedia."},
 		Sources: models.RecommendationSources{
 			MarketData: "Finnhub quote API",
 			News:       "Finnhub company news API",
@@ -216,40 +80,21 @@ func (s *RealtimeService) SnapshotForRecommendation(symbol string) models.Recomm
 	}
 }
 
-func (s *RealtimeService) Seeds() []models.Sector {
-	if len(s.sectors) > 0 {
-		return s.sectors
-	}
-	return defaultSectors()
-}
+func (s *RealtimeService) Seeds() []models.Sector { return s.sectors }
 
 func (s *RealtimeService) Summary() models.SummaryResponse {
-	if s.store.HasSummary() {
-		return s.store.Summary()
-	}
 	return models.SummaryResponse{UpdatedAt: s.now().UTC().Format(time.RFC3339), Market: models.MarketQuote{Symbol: "AAPL"}, Signals: []models.Signal{}}
 }
 
 func (s *RealtimeService) Watchlist() models.WatchlistResponse {
-	if s.store.HasWatchlist() {
-		return s.store.Watchlist()
-	}
 	return models.WatchlistResponse{Items: []models.WatchlistItem{}}
 }
 
 func (s *RealtimeService) Filings() models.FilingsResponse {
-	if s.store.HasFilings() {
-		return s.store.Filings()
-	}
 	return models.FilingsResponse{Items: []models.Filing{}}
 }
 
-func (s *RealtimeService) Sectors() []models.Sector {
-	if s.store.HasSectors() {
-		return s.store.Sectors()
-	}
-	return s.Seeds()
-}
+func (s *RealtimeService) Sectors() []models.Sector { return s.Seeds() }
 
 func (s *RealtimeService) Health() error {
 	if s.finnhub == nil {
@@ -257,3 +102,5 @@ func (s *RealtimeService) Health() error {
 	}
 	return nil
 }
+
+func (s *RealtimeService) preferredSymbols() []string { return []string{"AAPL"} }

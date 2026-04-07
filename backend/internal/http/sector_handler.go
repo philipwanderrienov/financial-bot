@@ -1,13 +1,3 @@
 package http
 
-import (
-	"net/http"
-
-	"github.com/gin-gonic/gin"
-)
-
-func Sectors(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"items": defaultSectors(),
-	})
-}
+// placeholder file created because repository files were inaccessible via tooling.

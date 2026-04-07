@@ -108,7 +108,9 @@ func (c *FinnhubClient) doJSON(path string, target any) error {
 		return fmt.Errorf("finnhub request failed: %s", resp.Status)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(target)
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber()
+	return decoder.Decode(target)
 }
 
 func (c *FinnhubClient) GetQuote(symbol string) (Quote, error) {
